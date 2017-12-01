@@ -1,37 +1,44 @@
 #!/usr/bin/perl
 
 package MOSDev;
+
 use autodie qw(:all);
 use Moo;
-use MooX::Cmd;
-use MooX::Options;
-use YAML ();
+
+use CLI::Osprey abbreviate => 0;
+use Cwd 'abs_path';
+use Filesys::Notify::Simple;
 use JSON ();
-use Term::ANSIColor;
+use Term::ANSIColor 'color';
+use Time::CTime 'strftime';
+use Time::HiRes;
+use YAML ();
 
 option port => (
-    is     => 'lazy',
-    format => 's',
-    doc    => 'port to connect to device (/dev/tty..., ws://.../rpc)',
-    short  => 'p',
+    is         => 'lazy',
+    format     => 's',
+    format_doc => 'port',
+    doc        => 'port to connect to device (/dev/tty..., ws://.../rpc)',
+    short      => 'p',
   );
 sub _build_port {
   return shift->config->{port} || '';
 }
 
 option mos_cli => (
-    is      => 'rw',
-    format => 's',
-    default => 'mos',
-    short   => 'mos-cli',
-    doc     => 'path to `mos` binary',
+    is         => 'rw',
+    format     => 's',
+    format_doc => 'path',
+    default    => 'mos',
+    doc        => 'path to `mos` binary',
   );
 
 option 'config_dir' => (
-    is      => 'rw',
-    default => './.mos-dev',
-    short   => 'config-dir',
-    doc     => 'directory of mos-dev.yml config file',
+    is         => 'rw',
+    format     => 's',
+    format_doc => 'path',
+    default    => './.mos-dev',
+    doc        => 'directory of mos-dev.yml config file',
   );
 
 sub config_file {
@@ -47,9 +54,9 @@ sub _build_config {
   return YAML::LoadFile($self->config_file);
 }
 
-sub execute {
-  my ($self, $args_ref) = @_;
-  $self->options_usage;
+sub run {
+  my ($self) = @_;
+  $self->osprey_usage(- 1);
 }
 
 sub save_port {
@@ -67,27 +74,31 @@ sub save_config {
 }
 
 sub call {
-  my ($self, $cmd, $args) = @_;
+  my ($self, $cmd, $args, $rawout) = @_;
   my $port = $self->port;
   $self->save_port($port);
 
   my $c = $self->console_stop;
 
+  $args = JSON->new->allow_nonref->encode($args) if ref $args;
+  $args ||= '{}';
+
   my $pid = open my $pipe, '-|';
   if ($pid == 0) {
-    exec $self->mos_cli, '--port', $port, 'call', $cmd, JSON->new->allow_nonref->encode($args || {});
+    exec $self->mos_cli, '--port', $port, 'call', $cmd, $args;
   }
   else {
     my @output = <$pipe>;
     close $pipe;
-    my $o = eval {JSON->new->allow_nonref->decode(join '', @output)};
-    if ($@) {
-      die @output;
+    my $o;
+    if ($rawout) {
+      $o = join '', @output;
+    } else {
+      $o = eval {JSON->new->allow_nonref->decode(join '', @output)};
+      die @output if $@;
     }
-    else {
-      $self->console_start if $c;
-      return $o;
-    }
+    $self->console_start if $c;
+    return $o;
   }
 }
 
@@ -154,36 +165,17 @@ sub status {
   print $bk;
 }
 
-package MOSDev::Cmd::Connect;
-use autodie qw(:all);
-use Moo;
-use MooX::Cmd;
-use MooX::Options;
-
-sub execute {
-  my ($self, $args_ref, $chain_ref) = @_;
-  my $mosdev = $chain_ref->[0];
-  my $port = $args_ref->[0] || $mosdev->port;
-  $mosdev->save_port($port);
-  $mosdev->status;
-}
-
-
-package MOSDev::Cmd::Sync;
-use autodie qw(:all);
-use Moo;
-use MooX::Cmd;
-use MooX::Options;
-use Cwd 'abs_path';
-use Filesys::Notify::Simple;
-use Term::ANSIColor;
-use Time::CTime;
-use Time::HiRes;
+subcommand connect => sub {
+    my $self = shift;
+    my $port = $_[0] || $self->port;
+    $self->save_port($port);
+    $self->status;
+  };
 
 sub _download_config {
-  my ($self, $mosdev, $device_config) = @_;
-  my $port = $mosdev->port;
-  my $cmd = sprintf '"%s" --port "%s" config-get', $mosdev->mos_cli, $port;
+  my ($self, $device_config) = @_;
+  my $port = $self->port;
+  my $cmd = sprintf '"%s" --port "%s" config-get', $self->mos_cli, $port;
   my $out = qx{$cmd};
   if ($out =~ /^{/) {
     open my $fh, '>', $device_config;
@@ -200,149 +192,138 @@ sub log {
   printf "%s[%s] > %s%s\n", color('bright_black'), strftime('%b %d %T.000', localtime), $message, color('black');
 }
 
-sub execute {
-  my ($self, $args_ref, $chain_ref) = @_;
-  my $mosdev = $chain_ref->[0];
+subcommand sync => sub {
+    my ($self) = @_;
 
-  my $port = $mosdev->port;
-  $mosdev->save_port($port);
-  $mosdev->status;
-  print "\n";
+    my $port = $self->port;
+    $self->save_port($port);
+    $self->status;
+    print "\n";
 
-  my $device_config = abs_path $mosdev->config_dir . "/config.json";
-  $self->_download_config($mosdev, $device_config);
-  $self->log("Downloaded config -> .mos-dev/config.json");
+    my $device_config = abs_path $self->config_dir . "/config.json";
+    $self->_download_config($device_config);
+    $self->log("Downloaded config -> .mos-dev/config.json");
 
-  my $reboot_file = abs_path $mosdev->config_dir . "/reboot";
-  unless (-e $reboot_file) {
-    open my $fh, '>', $reboot_file;
-    $fh->close;
-  }
+    my $reboot_file = abs_path $self->config_dir . "/reboot";
+    unless (-e $reboot_file) {
+      open my $fh, '>', $reboot_file;
+      $fh->close;
+    }
 
-  my $build_file = abs_path $mosdev->config_dir . "/build";
-  unless (-e $build_file) {
-    open my $fh, '>', $build_file;
-    $fh->close;
-  }
+    my $build_file = abs_path $self->config_dir . "/build";
+    unless (-e $build_file) {
+      open my $fh, '>', $build_file;
+      $fh->close;
+    }
 
-  $mosdev->console_start;
+    $self->console_start;
 
-  my $watcher = Filesys::Notify::Simple->new([ '.' ]);
-  my $cwd = abs_path '.';
-  my $skip_next_config_event = 0;
-  while (1) {
-    $watcher->wait(sub {
-      for my $event (@_) {
-        if ($event->{path} eq $reboot_file) {
-          $mosdev->console_stop;
-          $self->log("Reboot file touched, rebooting device");
-          $mosdev->call('Sys.Reboot');
-          $mosdev->console_start;
-        }
-        elsif ($event->{path} eq $device_config) {
-          if ($skip_next_config_event == 0) {
-            $mosdev->console_stop;
-            if (-f $event->{path}) {
-              $self->log("Uploading .mos-dev/config.json");
-              open my $fh, '<', $device_config;
-              my $c = JSON->new->allow_nonref->decode(join '', <$fh>);
-              $fh->close;
-              $mosdev->call('Config.Set', { config => $c });
-              $mosdev->call('Config.Save', { reboot => JSON::false });
-              $self->_download_config($mosdev, $device_config);
-              $skip_next_config_event++;
-              $self->log("Downloaded config -> .mos-dev/config.json");
-              $self->log("Rebooting device");
-              $mosdev->call('Sys.Reboot');
+    my $watcher = Filesys::Notify::Simple->new([ '.' ]);
+    my $cwd = abs_path '.';
+    my $skip_next_config_event = 0;
+    while (1) {
+      $watcher->wait(sub {
+        for my $event (@_) {
+          if ($event->{path} eq $reboot_file) {
+            $self->console_stop;
+            $self->log("Reboot file touched, rebooting device");
+            $self->call('Sys.Reboot');
+            $self->console_start;
+          }
+          elsif ($event->{path} eq $device_config) {
+            if ($skip_next_config_event == 0) {
+              $self->console_stop;
+              if (-f $event->{path}) {
+                $self->log("Uploading .mos-dev/config.json");
+                open my $fh, '<', $device_config;
+                my $c = JSON->new->allow_nonref->decode(join '', <$fh>);
+                $fh->close;
+                $self->call('Config.Set', { config => $c });
+                $self->call('Config.Save', { reboot => JSON::false });
+                $self->_download_config($device_config);
+                $skip_next_config_event++;
+                $self->log("Downloaded config -> .mos-dev/config.json");
+                $self->log("Rebooting device");
+                $self->call('Sys.Reboot');
+              }
+              else {
+                $self->_download_config($device_config);
+                $skip_next_config_event++;
+                $self->log("Downloaded config -> .mos-dev/config.json");
+              }
+              $self->console_start;
             }
             else {
-              $self->_download_config($mosdev, $device_config);
-              $skip_next_config_event++;
-              $self->log("Downloaded config -> .mos-dev/config.json");
+              $skip_next_config_event--;
             }
-            $mosdev->console_start;
           }
-          else {
-            $skip_next_config_event--;
+          elsif ($event->{path} =~ qr{^$cwd/(fs/.*)}) {
+            $self->console_stop;
+            if (-f $event->{path}) {
+              $self->log("Uploading file $1");
+              system $self->mos_cli, '--port', $port, 'put', $event->{path};
+            }
+            else {
+              $self->log("Removing file $1");
+              my $f = $event->{path};
+              $f =~ s{.*/}{};
+              system $self->mos_cli, '--port', $port, 'rm', $f;
+            }
+            $self->console_start;
+          }
+          elsif ($event->{path} eq "$cwd/build/fw.zip") {
+            if (-f $event->{path}) {
+              $self->console_stop;
+              $self->log("Flashing firmware build/fw.zip");
+              $self->flash($event->{path});
+              $self->console_start;
+            }
+          }
+          elsif ($event->{path} eq $build_file) {
+            $self->log("Build file touched, building firmware...");
+            $self->build(0);
           }
         }
-        elsif ($event->{path} =~ qr{^$cwd/(fs/.*)}) {
-          $mosdev->console_stop;
-          if (-f $event->{path}) {
-            $self->log("Uploading file $1");
-            system $mosdev->mos_cli, '--port', $port, 'put', $event->{path};
-          }
-          else {
-            $self->log("Removing file $1");
-            my $f = $event->{path};
-            $f =~ s{.*/}{};
-            system $mosdev->mos_cli, '--port', $port, 'rm', $f;
-          }
-          $mosdev->console_start;
-        }
-        elsif ($event->{path} eq "$cwd/build/fw.zip") {
-          if (-f $event->{path}) {
-            $mosdev->console_stop;
-            $self->log("Flashing firmware build/fw.zip");
-            system $mosdev->mos_cli, '--port', $port, 'flash', $event->{path};
-            $mosdev->console_start;
-          }
-        }
-        elsif ($event->{path} eq $build_file) {
-          $self->log("Build file touched, building firmware...");
-          $mosdev->build(0);
-        }
-      }
-    });
-  }
+      });
+    }
+
+  };
+
+sub flash {
+  my ($self, $path) = @_;
+  $path ||= 'build/fw.zip';
+  die "firmware file $path does not exist\n" unless -e $path;
+  my $c = $self->console_stop;
+  system $self->mos_cli, '--port', $self->port, 'flash', $path;
+  $self->console_start if $c;
 }
 
-package MOSDev::Cmd::Reboot;
-use autodie qw(:all);
+subcommand reboot => sub {shift->call('Sys.Reboot')};
+subcommand console => sub {shift->console_start(1)};
+subcommand flash => sub {shift->flash(@_)};
+subcommand call => sub {print $_[0]->call($_[1] || 'RPC.List', $_[2], 1)};
+subcommand help => sub {shift->osprey_help};
+
+subcommand build => 'MOSDev::Build';
+
+package MOSDev::Build;
 use Moo;
-use MooX::Cmd;
-use MooX::Options;
-
-sub execute {
-  my ($self, $args_ref, $chain_ref) = @_;
-  my $mosdev = $chain_ref->[0];
-  $mosdev->call('Sys.Reboot');
-}
-
-
-package MOSDev::Cmd::Build;
-use autodie qw(:all);
-use Moo;
-use MooX::Cmd;
-use MooX::Options;
+use CLI::Osprey desc => 'foobar';
 
 option arch => (
-    is     => 'rw',
-    format => 's',
-    doc    => 'architecture to build for, check connected device if not set',
+    is         => 'rw',
+    format     => 's',
+    format_doc => 'arch',
+    doc => 'architecture to build for, check connected device if not set',
   );
 
-sub execute {
-  my ($self, $args_ref, $chain_ref) = @_;
-  my $mosdev = $chain_ref->[0];
+sub run {
+  my ($self, $mosdev) = @_;
   $mosdev->build($self->arch, 1);
 }
 
 
-package MOSDev::Cmd::Console;
-use autodie qw(:all);
-use Moo;
-use MooX::Cmd;
-use MooX::Options;
-
-sub execute {
-  my ($self, $args_ref, $chain_ref) = @_;
-  my $mosdev = $chain_ref->[0];
-  $mosdev->console_start(1);
-}
-
-
 package main;
-MOSDev->new_with_cmd unless caller;
+MOSDev->new_with_options->run unless caller;
 
 1;

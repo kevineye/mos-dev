@@ -1,8 +1,7 @@
+requires "CLI::Osprey";
 requires "Filesys::Notify::Simple";
 requires "IPC::System::Simple";
 requires "JSON";
-requires "MooX::Cmd";
-requires "MooX::Options";
 requires "YAML";
 
 suggests "Filesys::Notify::KQueue";
