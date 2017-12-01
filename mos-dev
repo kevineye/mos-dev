@@ -12,34 +12,35 @@ use Term::ANSIColor;
 option port => (
     is     => 'lazy',
     format => 's',
-    doc    => 'the port to connect to the device (/dev/..., ws://.../rpc, etc.)',
+    doc    => 'port to connect to device (/dev/tty..., ws://.../rpc)',
     short  => 'p',
   );
-
 sub _build_port {
   return shift->config->{port} || '';
 }
 
-option 'mos_cli' => (
+option mos_cli => (
     is      => 'rw',
+    format => 's',
     default => 'mos',
     short   => 'mos-cli',
-  );
-
-has config => (
-    is => 'lazy'
+    doc     => 'path to `mos` binary',
   );
 
 option 'config_dir' => (
     is      => 'rw',
     default => './.mos-dev',
     short   => 'config-dir',
+    doc     => 'directory of mos-dev.yml config file',
   );
 
 sub config_file {
   return shift->config_dir . '/mos-dev.yml';
 }
 
+has config => (
+    is => 'lazy'
+  );
 sub _build_config {
   my $self = shift;
   return {} unless -e $self->config_file;
@@ -48,6 +49,7 @@ sub _build_config {
 
 sub execute {
   my ($self, $args_ref) = @_;
+  $self->options_usage;
 }
 
 sub save_port {
@@ -74,13 +76,15 @@ sub call {
   my $pid = open my $pipe, '-|';
   if ($pid == 0) {
     exec $self->mos_cli, '--port', $port, 'call', $cmd, JSON->new->allow_nonref->encode($args || {});
-  } else {
+  }
+  else {
     my @output = <$pipe>;
     close $pipe;
-    my $o = eval { JSON->new->allow_nonref->decode(join '', @output) };
+    my $o = eval {JSON->new->allow_nonref->decode(join '', @output)};
     if ($@) {
       die @output;
-    } else {
+    }
+    else {
       $self->console_start if $c;
       return $o;
     }
@@ -93,7 +97,8 @@ sub console_start {
   $self->{console_pid} = fork;
   if ($self->{console_pid} == 0) {
     exec $self->mos_cli, '--port', $self->port, 'console';
-  } else {
+  }
+  else {
     waitpid $self->{console_pid}, 0 if $wait;
   }
 }
@@ -120,7 +125,8 @@ sub build {
   my $pid = fork;
   if ($pid == 0) {
     exec $self->mos_cli, 'build', '--platform', $arch, '--local';
-  } else {
+  }
+  else {
     waitpid $pid, 0 if $wait;
   }
 }
@@ -140,9 +146,11 @@ sub status {
   printf "${gy}Chip:   ${gy}%s\n", $info->{arch};
   printf "${gy}App:    ${bl}%s %s ${gy}(build %s)\n", $info->{app}, $info->{fw_version}, $info->{fw_id};
   printf "${gy}FS:     ${bk}%s free ${gy}of %s\n", $info->{fs_free}, $info->{fs_size};
-  printf "${gy}RAM:    ${bk}%s free ${gy}of %s (%s min free)\n", $info->{ram_free}, $info->{ram_size}, $info->{ram_min_free};
+  printf "${gy}RAM:    ${bk}%s free ${gy}of %s (%s min free)\n", $info->{ram_free}, $info->{ram_size},
+    $info->{ram_min_free};
   printf "${gy}MAC:    ${gy}%s\n", $info->{mac} =~ s{(..)(..)(..)(..)(..)(..)}{$1:$2:$3:$4:$5:$6}r;
-  printf "${gy}WiFi:   %s%s\n", ($info->{wifi}{status} =~ /connected|got ip/ ? $gn : $gy), ($info->{wifi}{sta_ip} ? "$info->{wifi}{sta_ip} on $info->{wifi}{ssid}" : $info->{wifi}{ap_ip} || $info->{wifi}{status});
+  printf "${gy}WiFi:   %s%s\n", ($info->{wifi}{status} =~ /connected|got ip/ ? $gn : $gy),
+    ($info->{wifi}{sta_ip} ? "$info->{wifi}{sta_ip} on $info->{wifi}{ssid}" : $info->{wifi}{ap_ip} || $info->{wifi}{status});
   print $bk;
 }
 
@@ -181,7 +189,8 @@ sub _download_config {
     open my $fh, '>', $device_config;
     $fh->print($out);
     $fh->close;
-  } else {
+  }
+  else {
     die "Connect to device at $port failed.\n";
   }
 }
@@ -200,17 +209,17 @@ sub execute {
   $mosdev->status;
   print "\n";
 
-  my $device_config = abs_path $mosdev->config_dir."/config.json";
+  my $device_config = abs_path $mosdev->config_dir . "/config.json";
   $self->_download_config($mosdev, $device_config);
   $self->log("Downloaded config -> .mos-dev/config.json");
 
-  my $reboot_file = abs_path $mosdev->config_dir."/reboot";
+  my $reboot_file = abs_path $mosdev->config_dir . "/reboot";
   unless (-e $reboot_file) {
     open my $fh, '>', $reboot_file;
     $fh->close;
   }
 
-  my $build_file = abs_path $mosdev->config_dir."/build";
+  my $build_file = abs_path $mosdev->config_dir . "/build";
   unless (-e $build_file) {
     open my $fh, '>', $build_file;
     $fh->close;
@@ -218,7 +227,7 @@ sub execute {
 
   $mosdev->console_start;
 
-  my $watcher = Filesys::Notify::Simple->new(['.']);
+  my $watcher = Filesys::Notify::Simple->new([ '.' ]);
   my $cwd = abs_path '.';
   my $skip_next_config_event = 0;
   while (1) {
