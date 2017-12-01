@@ -1,5 +1,6 @@
 requires "CLI::Osprey";
 requires "Filesys::Notify::Simple";
+requires "IO::Interface";
 requires "IPC::System::Simple";
 requires "JSON";
 requires "YAML";

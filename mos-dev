@@ -8,6 +8,8 @@ use Moo;
 use CLI::Osprey abbreviate => 0;
 use Cwd 'abs_path';
 use Filesys::Notify::Simple;
+use IO::Interface::Simple;
+use IO::Socket::INET;
 use JSON ();
 use Term::ANSIColor 'color';
 use Time::CTime 'strftime';
@@ -102,7 +104,75 @@ sub call {
   }
 }
 
+sub port_type {
+  my $port = shift->port;
+  return $port =~ m{^ws://} ? 'ws' : 'dev';
+}
+
 sub console_start {
+  my $self = shift;
+  my $method = 'console_start_' . $self->port_type;
+  $self->$method(@_);
+}
+
+sub console_stop {
+  my $self = shift;
+  my $method = 'console_stop_' . $self->port_type;
+  $self->$method(@_);
+}
+
+option 'udp_log_addr' => (
+    is         => 'lazy',
+    format     => 's',
+    format_doc => 'host:port',
+    doc        => 'listening/sending address for UDP logging',
+  );
+sub _build_udp_log_addr {
+  my $port = '10001';
+  for my $name (qw(eth0 en0)) {
+    my $if = IO::Interface::Simple->new($name);
+    next unless $if;
+    my $addr = $if->address;
+    return "$addr:$port" if $addr;
+  }
+  for my $i (0..10) {
+    my $if = IO::Interface::Simple->new_from_index($i);
+    next unless $if;
+    my $addr = $if->address;
+    return "$addr:$port" if $addr;
+  }
+  return "127.0.0.1:$port";
+}
+
+sub console_start_ws {
+  my ($self, $wait) = @_;
+  return if $self->{console_pid};
+
+  my $addr = $self->udp_log_addr;
+  my (undef, $port) = split ':', $addr;
+  $self->log("Starting UDP log listener on port $port");
+  $self->{console_pid} = fork;
+  if ($self->{console_pid} == 0) {
+    #exec 'nc', '-u', '-l', '-k', '-d', $port;
+    while (1) {
+      my $sock = IO::Socket::INET->new(LocalPort => $port, Proto => 'udp') or die "$@\n";
+      my $msg;
+      print $msg while $sock->recv($msg, 1024);
+      $sock->close;
+      warn "UDP socket closed, reopening...\n";
+    }
+    exit;
+  }
+  else {
+    $self->log("Configuring UDP log sending to $addr");
+    system $self->mos_cli, '--port', $self->port, '--no-reboot', 'config-set', "debug.udp_log_addr=$addr";
+    waitpid $self->{console_pid}, 0 if $wait;
+  }
+}
+
+sub console_stop_ws {}
+
+sub console_start_dev {
   my ($self, $wait) = @_;
   return if $self->{console_pid};
   $self->{console_pid} = fork;
@@ -114,7 +184,7 @@ sub console_start {
   }
 }
 
-sub console_stop {
+sub console_stop_dev {
   my ($self) = @_;
   my $ret = 0;
   if ($self->{console_pid}) {
@@ -200,6 +270,8 @@ subcommand sync => sub {
     $self->status;
     print "\n";
 
+    $self->console_start;
+
     my $device_config = abs_path $self->config_dir . "/config.json";
     $self->_download_config($device_config);
     $self->log("Downloaded config -> .mos-dev/config.json");
@@ -215,8 +287,6 @@ subcommand sync => sub {
       open my $fh, '>', $build_file;
       $fh->close;
     }
-
-    $self->console_start;
 
     my $watcher = Filesys::Notify::Simple->new([ '.' ]);
     my $cwd = abs_path '.';
