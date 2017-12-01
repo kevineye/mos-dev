@@ -142,7 +142,7 @@ sub status {
   printf "${gy}FS:     ${bk}%s free ${gy}of %s\n", $info->{fs_free}, $info->{fs_size};
   printf "${gy}RAM:    ${bk}%s free ${gy}of %s (%s min free)\n", $info->{ram_free}, $info->{ram_size}, $info->{ram_min_free};
   printf "${gy}MAC:    ${gy}%s\n", $info->{mac} =~ s{(..)(..)(..)(..)(..)(..)}{$1:$2:$3:$4:$5:$6}r;
-  printf "${gy}WiFi:   %s%s\n", ($info->{wifi}{status} =~ /connected|got ip/ ? $gn : $gy), "$info->{wifi}{sta_ip} on $info->{wifi}{ssid}" || $info->{wifi}{ap_ip} || $info->{wifi}{status};
+  printf "${gy}WiFi:   %s%s\n", ($info->{wifi}{status} =~ /connected|got ip/ ? $gn : $gy), ($info->{wifi}{sta_ip} ? "$info->{wifi}{sta_ip} on $info->{wifi}{ssid}" : $info->{wifi}{ap_ip} || $info->{wifi}{status});
   print $bk;
 }
 
