@@ -360,12 +360,26 @@ subcommand sync => sub {
   };
 
 sub flash {
+  my $self = shift;
+  my $method = 'flash_' . $self->port_type;
+  $self->$method(@_);
+}
+
+sub flash_dev {
   my ($self, $path) = @_;
   $path ||= 'build/fw.zip';
   die "firmware file $path does not exist\n" unless -e $path;
   my $c = $self->console_stop;
   system $self->mos_cli, '--port', $self->port, 'flash', $path;
   $self->console_start if $c;
+}
+
+sub flash_ws {
+  my ($self, $path) = @_;
+  $self->log("Starting OTA flash...");
+  $self->port =~ m{^ws://(.*)/rpc$};
+  die "cannot determine device IP address\n" unless $1;
+  system 'curl', '-F', 'filedata=@'.$path, "http://$1/update";
 }
 
 subcommand reboot => sub {shift->call('Sys.Reboot')};
