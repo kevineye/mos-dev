@@ -232,7 +232,7 @@ sub status {
   printf "${gy}MAC:    ${gy}%s\n", $info->{mac} =~ s{(..)(..)(..)(..)(..)(..)}{$1:$2:$3:$4:$5:$6}r;
   printf "${gy}WiFi:   %s%s\n", ($info->{wifi}{status} =~ /connected|got ip/ ? $gn : $gy),
     ($info->{wifi}{sta_ip} ? "$info->{wifi}{sta_ip} on $info->{wifi}{ssid}" : $info->{wifi}{ap_ip} || $info->{wifi}{status});
-  print $bk;
+  print color('reset');
 }
 
 subcommand connect => sub {
@@ -259,7 +259,7 @@ sub _download_config {
 
 sub log {
   my ($self, $message) = @_;
-  printf "%s[%s] > %s%s\n", color('bright_black'), strftime('%b %d %T.000', localtime), $message, color('black');
+  printf "%s[%s] > %s%s\n", color('bright_black'), strftime('%b %d %T.000', localtime), $message, color('reset');
 }
 
 subcommand sync => sub {
