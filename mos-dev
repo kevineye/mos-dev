@@ -15,11 +15,14 @@ use Time::HiRes;
 use YAML ();
 
 option port => (
-    is         => 'lazy',
+    is         => 'rw',
+    builder    => 1,
+    lazy       => 1,
     format     => 's',
     format_doc => 'port',
     doc        => 'port to connect to device (/dev/tty..., ws://.../rpc)',
     short      => 'p',
+    trigger    => \&save_config,
   );
 sub _build_port {
   return shift->config->{port} || '';
@@ -57,12 +60,6 @@ sub _build_config {
 sub run {
   my ($self) = @_;
   $self->osprey_usage;
-}
-
-sub save_port {
-  my ($self, $port) = @_;
-  $self->config->{port} = $port;
-  $self->save_config;
 }
 
 sub save_config {
@@ -130,9 +127,8 @@ sub status {
 }
 
 subcommand connect => sub {
-    my $self = shift;
-    my $port = $_[0] || $self->port;
-    $self->save_port($port);
+    my ($self, $port) = @_;
+    $self->port($port) if $port;
     $self->status;
   };
 
@@ -172,13 +168,13 @@ use Moo;
 use CLI::Osprey desc => 'sync device with fs, watch console, and watch for commands';
 use Cwd 'abs_path';
 use Filesys::Notify::Simple;
+use Term::ANSIColor;
 
 sub run {
   my ($self) = @_;
   my $mosdev = $self->parent_command;
 
   my $port = $mosdev->port;
-  $mosdev->save_port($port);
   $mosdev->status;
   print "\n";
 
@@ -207,67 +203,72 @@ sub run {
   while (1) {
     $watcher->wait(sub {
       for my $event (@_) {
-        if ($event->{path} eq $reboot_file) {
-          $console->stop;
-          $mosdev->log("Reboot file touched, rebooting device");
-          $mosdev->call('Sys.Reboot');
-          $console->start;
-        }
-        elsif ($event->{path} eq $device_config) {
-          if ($skip_next_config_event == 0) {
+        eval {
+          if ($event->{path} eq $reboot_file) {
             $console->stop;
-            if (-f $event->{path}) {
-              $mosdev->log("Uploading .mos-dev/config.json");
-              open my $fh, '<', $device_config;
-              my $c = JSON->new->allow_nonref->decode(join '', <$fh>);
-              $fh->close;
-              $mosdev->call('Config.Set', { config => $c });
-              $mosdev->call('Config.Save', { reboot => JSON::false });
-              $mosdev->download_config($device_config);
-              $skip_next_config_event++;
-              $mosdev->log("Downloaded config -> .mos-dev/config.json");
-              $mosdev->log("Rebooting device");
-              $mosdev->call('Sys.Reboot');
+            $mosdev->log("Reboot file touched, rebooting device");
+            $mosdev->call('Sys.Reboot');
+            $console->start;
+          }
+          elsif ($event->{path} eq $device_config) {
+            if ($skip_next_config_event == 0) {
+              $console->stop;
+              if (-f $event->{path}) {
+                $mosdev->log("Uploading .mos-dev/config.json");
+                open my $fh, '<', $device_config;
+                my $c = JSON->new->allow_nonref->decode(join '', <$fh>);
+                $fh->close;
+                $mosdev->call('Config.Set', { config => $c });
+                $mosdev->call('Config.Save', { reboot => JSON::false });
+                $mosdev->download_config($device_config);
+                $skip_next_config_event++;
+                $mosdev->log("Downloaded config -> .mos-dev/config.json");
+                $mosdev->log("Rebooting device");
+                $mosdev->call('Sys.Reboot');
+              }
+              else {
+                $mosdev->download_config($device_config);
+                $skip_next_config_event++;
+                $mosdev->log("Downloaded config -> .mos-dev/config.json");
+              }
+              $console->start;
             }
             else {
-              $mosdev->download_config($device_config);
-              $skip_next_config_event++;
-              $mosdev->log("Downloaded config -> .mos-dev/config.json");
+              $skip_next_config_event--;
+            }
+          }
+          elsif ($event->{path} =~ qr{^$cwd/(fs/.*)}) {
+            $console->stop;
+            if (-f $event->{path}) {
+              $mosdev->log("Uploading file $1");
+              system $mosdev->mos_cli, '--port', $port, 'put', $event->{path};
+            }
+            else {
+              $mosdev->log("Removing file $1");
+              my $f = $event->{path};
+              $f =~ s{.*/}{};
+              system $mosdev->mos_cli, '--port', $port, 'rm', $f;
             }
             $console->start;
           }
-          else {
-            $skip_next_config_event--;
+          elsif ($event->{path} eq "$cwd/build/fw.zip") {
+            if (-f $event->{path}) {
+              $console->stop;
+              $mosdev->log("Flashing firmware build/fw.zip");
+              MOSDev::Flash->new_with_options(parent_command => $mosdev)->run($event->{path});
+              $console->start;
+            }
           }
-        }
-        elsif ($event->{path} =~ qr{^$cwd/(fs/.*)}) {
-          $console->stop;
-          if (-f $event->{path}) {
-            $mosdev->log("Uploading file $1");
-            system $mosdev->mos_cli, '--port', $port, 'put', $event->{path};
-          }
-          else {
-            $mosdev->log("Removing file $1");
-            my $f = $event->{path};
-            $f =~ s{.*/}{};
-            system $mosdev->mos_cli, '--port', $port, 'rm', $f;
-          }
-          $console->start;
-        }
-        elsif ($event->{path} eq "$cwd/build/fw.zip") {
-          if (-f $event->{path}) {
+          elsif ($event->{path} eq $build_file) {
+            $mosdev->log("Build file touched, building firmware...");
             $console->stop;
-            $mosdev->log("Flashing firmware build/fw.zip");
-            MOSDev::Flash->new_with_options(parent_command => $mosdev)->run($event->{path});
+            MOSDev::Build->new_with_options(parent_command => $mosdev, wait => 0, save_conf => 1, local => 0)->run;
             $console->start;
+            # TODO skip removing/uploading conf9.json
           }
-        }
-        elsif ($event->{path} eq $build_file) {
-          $mosdev->log("Build file touched, building firmware...");
-          $console->stop;
-          MOSDev::Build->new_with_options(parent_command => $mosdev, wait => 0, save_conf => 1, local => 0)->run;
-          $console->start;
-          # TODO skip removing/uploading conf9.json
+        };
+        if ($@) {
+          $mosdev->log(color('red')."$@".color('reset'));
         }
       }
     });
@@ -279,6 +280,7 @@ sub run {
 package MOSDev::Build;
 use Moo;
 use CLI::Osprey desc => 'build firmware';
+use Term::ANSIColor;
 
 option arch => (
     is         => 'lazy',
@@ -326,8 +328,9 @@ sub run {
   my $remove_conf9 = 0;
   if ($self->save_conf) {
     if (-e 'fs/conf9.json') {
-      warn "Refusing to overwrite fs/conf9.json; cannot save device config into build.\n";
-    } else {
+      $mosdev->log(color('red')."Refusing to overwrite fs/conf9.json; cannot save device config into build.\n".color('reset'));
+    }
+    else {
       $mosdev->log("Saving current config into fs/conf9.json");
       $mosdev->download_config('fs/conf9.json');
       $remove_conf9 = 1;
@@ -360,7 +363,6 @@ sub call_rawout {
   my ($self, $cmd, $args) = @_;
   my $mosdev = $self->parent_command;
   my $port = $mosdev->port;
-  $mosdev->save_port($port);
 
   $args = JSON->new->allow_nonref->encode($args) if ref $args;
   $args ||= '{}';
@@ -413,7 +415,7 @@ sub run {
 
 package MOSDev::Console::ws;
 use Moo;
-use base 'MOSDev::Console';
+extends 'MOSDev::Console';
 
 sub start {
   my ($self) = @_;
@@ -444,7 +446,7 @@ sub stop {}
 
 package MOSDev::Console::dev;
 use Moo;
-use base 'MOSDev::Console';
+extends 'MOSDev::Console';
 
 sub start {
   my ($self) = @_;
@@ -480,7 +482,7 @@ sub run {
 
 package MOSDev::Flash::ws;
 use Moo;
-use base 'MOSDev::Flash';
+extends 'MOSDev::Flash';
 
 sub run {
   my ($self, $path) = @_;
@@ -494,7 +496,7 @@ sub run {
 
 package MOSDev::Flash::dev;
 use Moo;
-use base 'MOSDev::Flash';
+extends 'MOSDev::Flash';
 
 sub run {
   my ($self, $path) = @_;
