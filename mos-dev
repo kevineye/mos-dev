@@ -22,10 +22,17 @@ option port => (
     format_doc => 'port',
     doc        => 'port to connect to device (/dev/tty..., ws://.../rpc)',
     short      => 'p',
-    trigger    => \&save_config,
+    trigger    => 1,
   );
 sub _build_port {
   return shift->config->{port} || '';
+}
+sub _trigger_port {
+  my ($self, $port) = @_;
+  my $g = $self->devices_config;
+  $DB::single = 1;
+  $self->{port} = $g->{devices}{$port}{port} if exists $g->{devices}{$port};
+  $self->save_config;
 }
 
 option mos_cli => (
@@ -55,6 +62,22 @@ sub _build_config {
   my $self = shift;
   return {} unless -e $self->config_file;
   return YAML::LoadFile($self->config_file);
+}
+
+has devices_config => (
+    is => 'lazy'
+  );
+sub _build_devices_config {
+  my $conf = {};
+  my $file = 'mos-devices.yml';
+  unless (-e $file) {
+    $file = '../mos-devices.yml';
+  }
+  if (-e $file) {
+    $conf = YAML::LoadFile($file);
+  }
+  $conf->{devices} ||= {};
+  return $conf;
 }
 
 sub run {
