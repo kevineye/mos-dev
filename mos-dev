@@ -30,8 +30,8 @@ sub _build_port {
 sub _trigger_port {
   my ($self, $port) = @_;
   my $g = $self->devices_config;
-  $DB::single = 1;
   $self->{port} = $g->{devices}{$port}{port} if exists $g->{devices}{$port};
+  $self->config->{port} = $self->{port};
   $self->save_config;
 }
 
@@ -285,7 +285,7 @@ sub run {
           elsif ($event->{path} eq $build_file) {
             $mosdev->log("Build file touched, building firmware...");
             $console->stop;
-            MOSDev::Build->new_with_options(parent_command => $mosdev, wait => 0, save_conf => 1, local => 0)->run;
+            MOSDev::Build->new_with_options(parent_command => $mosdev, wait => 0, save_conf => 1, local => 1)->run;
             $console->start;
             # TODO skip removing/uploading conf9.json
           }
